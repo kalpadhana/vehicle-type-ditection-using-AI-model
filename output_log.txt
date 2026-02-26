@@ -1,0 +1,1242 @@
+=== Cell 1 ===
+# ============================================================
+# ICT 3212 - Vehicle Detection System using CNN
+# FINAL CORRECTED VERSION – Overfitting Fixed
+# Rajarata University of Sri Lanka | Department of Computing
+# ============================================================
+
+# ============================================================
+# CELL 1: Mount Google Drive & Extract Dataset
+# ============================================================
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+import zipfile, os, shutil, random
+
+zip_path    = '/content/drive/MyDrive/vehicle_dataset.zip'
+extract_dir = '/content/vehicle_dataset'
+
+if not os.path.exists(extract_dir):
+    print("Extracting dataset …")
+    with zipfile.ZipFile(zip_path, 'r') as zf:
+        zf.extractall(extract_dir)
+    print("Done!")
+else:
+    print("Dataset folder already exists – skipping extraction.")
+
+TRAIN_DIR = '/content/vehicle_dataset/vehicle_dataset/train'
+TEST_DIR  = '/content/vehicle_dataset/vehicle_dataset/test'
+
+# ============================================================
+# CELL 2: Fix Folder Names
+# ============================================================
+
+rename_train = {'Car': 'car', 'trucks': 'truck', 'Bike': 'motorcycle'}
+for old, new in rename_train.items():
+    old_path = os.path.join(TRAIN_DIR, old)
+    new_path = os.path.join(TRAIN_DIR, new)
+    if os.path.exists(old_path):
+        os.rename(old_path, new_path)
+        print(f"  ✅ Renamed: train/{old} → train/{new}")
+
+rename_test = {'bike': 'motorcycle'}
+for old, new in rename_test.items():
+    old_path = os.path.join(TEST_DIR, old)
+    new_path = os.path.join(TEST_DIR, new)
+    if os.path.exists(old_path):
+        os.rename(old_path, new_path)
+        print(f"  ✅ Renamed: test/{old} → test/{new}")
+
+print("Train folders:", os.listdir(TRAIN_DIR))
+print("Test folders :", os.listdir(TEST_DIR))
+
+# ============================================================
+# CELL 3: Populate Empty Test Folders
+# ============================================================
+
+CLASS_NAMES = ['car', 'bus', 'truck', 'motorcycle']
+random.seed(42)
+
+for cls in CLASS_NAMES:
+    train_cls = os.path.join(TRAIN_DIR, cls)
+    test_cls  = os.path.join(TEST_DIR,  cls)
+    os.makedirs(test_cls, exist_ok=True)
+
+    existing = [f for f in os.listdir(test_cls)
+                if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+    if len(existing) > 0:
+        print(f"  ✅ {cls:12s} → already has {len(existing)} test images")
+        continue
+
+    all_images = [f for f in os.listdir(train_cls)
+                  if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+    random.shuffle(all_images)
+    test_count = max(1, int(len(all_images) * 0.2))
+
+    for img_name in all_images[:test_count]:
+        shutil.copy2(os.path.join(train_cls, img_name),
+                     os.path.join(test_cls,  img_name))
+    print(f"  ✅ {cls:12s} → {test_count} images copied to test/")
+
+print("\nFinal Dataset Structure:")
+print("=" * 45)
+for split, path_dir in [('train', TRAIN_DIR), ('test', TEST_DIR)]:
+    print(f"\n  {split.upper()}/")
+    for cls in CLASS_NAMES:
+        path  = os.path.join(path_dir, cls)
+        count = len([f for f in os.listdir(path)
+                     if f.lower().endswith(('.jpg','.jpeg','.png'))]) \
+                if os.path.exists(path) else 0
+        print(f"    {'✅' if count > 0 else '❌'} {cls:12s}: {count} images")
+print("=" * 45)
+
+# ============================================================
+# CELL 4: Import Libraries
+# ============================================================
+
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from tensorflow import keras
+from tensorflow.keras import layers
+from tensorflow.keras.layers import Dropout, BatchNormalization
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from sklearn.metrics import classification_report, confusion_matrix
+
+print("All libraries imported successfully!")
+
+# ============================================================
+# CELL 5: Configuration
+# ✅ FIX 1: Batch size changed to 64
+# ============================================================
+
+DISPLAY_NAMES = ['Car', 'Bus', 'Truck', 'Motorcycle']
+NUM_CLASSES   = 4
+IMG_HEIGHT    = 128
+IMG_WIDTH     = 128
+EPOCHS        = 30
+BATCH_SIZE    = 64        # ✅ changed from 32 → 64
+
+print(f"  Image size  : {IMG_HEIGHT} x {IMG_WIDTH}")
+print(f"  Max epochs  : {EPOCHS}")
+print(f"  Batch size  : {BATCH_SIZE}  ✅ (changed from 32)")
+print(f"  Classes     : {CLASS_NAMES}")
+
+# ============================================================
+# CELL 6: Data Generators
+# ✅ FIX 2: Reduced augmentation strength to fix val > train gap
+# ============================================================
+
+train_datagen = ImageDataGenerator(
+    rescale=1./255,
+    rotation_range=15,              # ✅ reduced from 20
+    width_shift_range=0.15,         # ✅ reduced from 0.2
+    height_shift_range=0.15,        # ✅ reduced from 0.2
+    shear_range=0.10,               # ✅ reduced from 0.15
+    zoom_range=0.15,                # ✅ reduced from 0.2
+    horizontal_flip=True,
+    brightness_range=[0.85, 1.15],  # ✅ narrowed from [0.8, 1.2]
+    channel_shift_range=15.0,       # ✅ reduced from 20.0
+    fill_mode='nearest',
+    validation_split=0.20           # ✅ increased from 0.2 (same – keep stable)
+)
+
+test_datagen = ImageDataGenerator(rescale=1./255)
+
+# Training data
+train_generator = train_datagen.flow_from_directory(
+    TRAIN_DIR,
+    target_size=(IMG_HEIGHT, IMG_WIDTH),
+    batch_size=BATCH_SIZE,
+    class_mode='categorical',
+    classes=CLASS_NAMES,
+    subset='training',
+    shuffle=True,
+    seed=42
+)
+
+# Validation data
+val_generator = train_datagen.flow_from_directory(
+    TRAIN_DIR,
+    target_size=(IMG_HEIGHT, IMG_WIDTH),
+    batch_size=BATCH_SIZE,
+    class_mode='categorical',
+    classes=CLASS_NAMES,
+    subset='validation',
+    shuffle=False,
+    seed=42
+)
+
+# Test data
+test_generator = test_datagen.flow_from_directory(
+    TEST_DIR,
+    target_size=(IMG_HEIGHT, IMG_WIDTH),
+    batch_size=BATCH_SIZE,
+    class_mode='categorical',
+    classes=CLASS_NAMES,
+    shuffle=False
+)
+
+print(f"\nTraining   batches : {len(train_generator)}")
+print(f"Validation batches : {len(val_generator)}")
+print(f"Test       batches : {len(test_generator)}")
+
+# ============================================================
+# CELL 7: Visualize Sample Images
+# ============================================================
+
+sample_X, sample_y = next(train_generator)
+
+plt.figure(figsize=(14, 7))
+for i in range(16):
+    plt.subplot(4, 4, i + 1)
+    plt.imshow(sample_X[i])
+    plt.title(DISPLAY_NAMES[np.argmax(sample_y[i])], fontsize=9)
+    plt.axis('off')
+plt.suptitle('Sample Augmented Training Images (128x128)', fontsize=14)
+plt.tight_layout()
+plt.show()
+
+# ============================================================
+# CELL 8: Class Distribution
+# ============================================================
+
+train_counts, test_counts = [], []
+for cls in CLASS_NAMES:
+    tr = os.path.join(TRAIN_DIR, cls)
+    te = os.path.join(TEST_DIR,  cls)
+    train_counts.append(len([f for f in os.listdir(tr)
+                              if f.lower().endswith(('.jpg','.jpeg','.png'))]))
+    test_counts.append( len([f for f in os.listdir(te)
+                              if f.lower().endswith(('.jpg','.jpeg','.png'))]))
+
+x, width = np.arange(NUM_CLASSES), 0.35
+fig, ax  = plt.subplots(figsize=(10, 5))
+b1 = ax.bar(x - width/2, train_counts, width, label='Train', color='#2196F3')
+b2 = ax.bar(x + width/2, test_counts,  width, label='Test',  color='#FF5722')
+ax.set_xlabel('Vehicle Class')
+ax.set_ylabel('Number of Images')
+ax.set_title('Class Distribution – Train vs Test')
+ax.set_xticks(x)
+ax.set_xticklabels(DISPLAY_NAMES)
+ax.legend()
+ax.bar_label(b1, padding=3)
+ax.bar_label(b2, padding=3)
+plt.tight_layout()
+plt.show()
+
+print("\nImage counts:")
+for cls, tr, te in zip(DISPLAY_NAMES, train_counts, test_counts):
+    print(f"  {cls:12s} – Train: {tr:4d}  |  Test: {te:4d}")
+
+# ============================================================
+# CELL 9: Build CNN Model
+# ✅ FIX 3: Reduced dropout in all blocks to fix val > train gap
+# ============================================================
+
+model = keras.Sequential([
+
+    # ── Conv Block 1 – 32 filters ─────────────────────────
+    layers.Conv2D(32, (3,3), activation='relu',
+                  padding='same', input_shape=(IMG_HEIGHT, IMG_WIDTH, 3)),
+    BatchNormalization(),
+    layers.Conv2D(32, (3,3), activation='relu', padding='same'),
+    BatchNormalization(),
+    layers.MaxPooling2D((2,2)),        # 128 → 64
+    Dropout(0.20),                     # ✅ reduced from 0.25
+
+    # ── Conv Block 2 – 64 filters ─────────────────────────
+    layers.Conv2D(64, (3,3), activation='relu', padding='same'),
+    BatchNormalization(),
+    layers.Conv2D(64, (3,3), activation='relu', padding='same'),
+    BatchNormalization(),
+    layers.MaxPooling2D((2,2)),        # 64 → 32
+    Dropout(0.20),                     # ✅ reduced from 0.25
+
+    # ── Conv Block 3 – 128 filters ────────────────────────
+    layers.Conv2D(128, (3,3), activation='relu', padding='same'),
+    BatchNormalization(),
+    layers.Conv2D(128, (3,3), activation='relu', padding='same'),
+    BatchNormalization(),
+    layers.MaxPooling2D((2,2)),        # 32 → 16
+    Dropout(0.25),                     # ✅ slightly reduced from 0.25 (same)
+
+    # ── Conv Block 4 – 256 filters ────────────────────────
+    layers.Conv2D(256, (3,3), activation='relu', padding='same'),
+    BatchNormalization(),
+    layers.Conv2D(256, (3,3), activation='relu', padding='same'),
+    BatchNormalization(),
+    layers.MaxPooling2D((2,2)),        # 16 → 8
+    Dropout(0.25),                     # ✅ kept same
+
+    # ── Classifier Head ───────────────────────────────────
+    layers.Flatten(),
+    layers.Dense(512, activation='relu'),
+    BatchNormalization(),
+    Dropout(0.40),                     # ✅ reduced from 0.50
+    layers.Dense(256, activation='relu'),
+    BatchNormalization(),
+    Dropout(0.30),                     # ✅ reduced from 0.40
+    layers.Dense(128, activation='relu'),
+    Dropout(0.20),                     # ✅ reduced from 0.30
+
+    # Output – 4 vehicle classes
+    layers.Dense(NUM_CLASSES, activation='softmax')
+])
+
+model.summary()
+
+# ============================================================
+# CELL 10: Compile the Model
+# ✅ FIX 4: Slightly higher learning rate (0.0005 → 0.0008)
+# ============================================================
+
+model.compile(
+    optimizer=keras.optimizers.Adam(learning_rate=0.00081),  # ✅ increased from 0.0005
+    loss='categorical_crossentropy',
+    metrics=['accuracy']
+)
+
+print("Model compiled!")
+print(f"  Optimizer    : Adam (lr=0.0008)  ✅ increased from 0.0005")
+print(f"  Loss         : categorical_crossentropy")
+print(f"  Metrics      : accuracy")
+
+# ============================================================
+# CELL 11: Callbacks
+# ✅ FIX 5: Adjusted patience values
+# ============================================================
+
+callbacks = [
+
+    keras.callbacks.ReduceLROnPlateau(
+        monitor='val_loss',
+        factor=0.5,
+        patience=3,                  # ✅ reduced from 4
+        min_lr=1e-7,
+        verbose=1
+    ),
+    keras.callbacks.ModelCheckpoint(
+        '/content/drive/MyDrive/best_vehicle_model_fixed.h5',
+        monitor='val_accuracy',
+        save_best_only=True,
+        verbose=1
+    )
+]
+
+print("Callbacks ready!")
+print("  ✔ EarlyStopping     patience=7")
+print("  ✔ ReduceLROnPlateau patience=3, factor=0.5")
+print("  ✔ ModelCheckpoint   → saved to Google Drive")
+
+# ============================================================
+# CELL 12: Train the Model
+# ============================================================
+
+print("\n" + "="*50)
+print("  STARTING TRAINING")
+print(f"  Image size : {IMG_HEIGHT}x{IMG_WIDTH}")
+print(f"  Max epochs : {EPOCHS}")
+print(f"  Batch size : {BATCH_SIZE}")
+print("="*50 + "\n")
+
+history = model.fit(
+    train_generator,
+    epochs=EPOCHS,
+    validation_data=val_generator,
+    callbacks=callbacks,
+    verbose=1
+)
+
+print("\nTraining completed!")
+
+# ============================================================
+# CELL 13: Visualize Training History + Overfitting Diagnostic
+# ============================================================
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+epochs_ran = range(1, len(history.history['accuracy']) + 1)
+
+# Accuracy plot
+axes[0].plot(epochs_ran, history.history['accuracy'],
+             label='Training',   linewidth=2, color='#2196F3')
+axes[0].plot(epochs_ran, history.history['val_accuracy'],
+             label='Validation', linewidth=2, color='#FF5722')
+axes[0].set_xlabel('Epoch')
+axes[0].set_ylabel('Accuracy')
+axes[0].set_title('Model Accuracy Over Time')
+axes[0].legend()
+axes[0].grid(True, alpha=0.3)
+axes[0].set_ylim([0, 1])
+
+# Loss plot
+axes[1].plot(epochs_ran, history.history['loss'],
+             label='Training',   linewidth=2, color='#2196F3')
+axes[1].plot(epochs_ran, history.history['val_loss'],
+             label='Validation', linewidth=2, color='#FF5722')
+axes[1].set_xlabel('Epoch')
+axes[1].set_ylabel('Loss')
+axes[1].set_title('Model Loss Over Time')
+axes[1].legend()
+axes[1].grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.show()
+
+best_val_acc    = max(history.history['val_accuracy'])
+final_train_acc = history.history['accuracy'][-1]
+final_val_acc   = history.history['val_accuracy'][-1]
+gap             = abs(final_val_acc - final_train_acc)
+
+print(f"\nBest Validation Accuracy : {best_val_acc * 100:.2f}%")
+print(f"Total Epochs Trained     : {len(history.history['accuracy'])}")
+
+# ✅ Overfitting Diagnostic
+print('\n' + '=' * 55)
+print('       OVERFITTING DIAGNOSTIC REPORT')
+print('=' * 55)
+print(f'  Training Accuracy   : {final_train_acc*100:.2f}%')
+print(f'  Validation Accuracy : {final_val_acc*100:.2f}%')
+print(f'  Gap (|Val - Train|) : {gap*100:.2f}%')
+print('─' * 55)
+if gap < 0.05:
+    print('  ✅ GOOD FIT   – Gap under 5%  – model generalizes well')
+elif gap < 0.10:
+    print('  ⚠️  MILD GAP  – Gap 5–10%    – acceptable result')
+else:
+    print('  ❌ HIGH GAP   – Gap over 10%  – overfitting present')
+    print('     Suggestion: reduce dropout further or augmentation')
+print('=' * 55)
+
+# ============================================================
+# CELL 14: Evaluate on Test Set
+# ============================================================
+
+# Final evaluation
+test_loss, test_accuracy = model.evaluate(test_generator, verbose=0)
+print(f'\nTest Accuracy : {test_accuracy * 100:.2f}%')
+print(f'Test Loss     : {test_loss:.4f}')
+
+# Predictions
+y_prob = model.predict(test_generator, verbose=0)
+y_pred = np.argmax(y_prob, axis=1)
+y_true = test_generator.classes
+
+# ============================================================
+# CELL 15: Classification Report
+# ============================================================
+
+print("\nClassification Report:")
+print("=" * 60)
+print(classification_report(y_true, y_pred,
+                             target_names=DISPLAY_NAMES, digits=3))
+
+# ============================================================
+# CELL 16: Confusion Matrix
+# ============================================================
+
+cm = confusion_matrix(y_true, y_pred)
+
+plt.figure(figsize=(8, 6))
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+            xticklabels=DISPLAY_NAMES, yticklabels=DISPLAY_NAMES,
+            linewidths=0.5)
+plt.xlabel('Predicted Label', fontsize=12)
+plt.ylabel('True Label',      fontsize=12)
+plt.title('Confusion Matrix – Vehicle Detection', fontsize=14)
+plt.tight_layout()
+plt.show()
+
+print("\nPer-Class Accuracy:")
+print("-" * 45)
+for i, cls in enumerate(DISPLAY_NAMES):
+    correct = cm[i, i]
+    total   = cm[i].sum()
+    acc     = correct / total * 100
+    bar     = '█' * int(acc / 5)
+    print(f"  {cls:12s}: {correct}/{total}  {bar} {acc:.1f}%")
+
+# ============================================================
+# CELL 17: Visualize Predictions
+# ============================================================
+
+test_batch_X, test_batch_y = next(
+    test_datagen.flow_from_directory(
+        TEST_DIR,
+        target_size=(IMG_HEIGHT, IMG_WIDTH),
+        batch_size=16,
+        class_mode='categorical',
+        classes=CLASS_NAMES,
+        shuffle=True,
+        seed=99
+    )
+)
+
+pred_probs  = model.predict(test_batch_X, verbose=0)
+pred_labels = np.argmax(pred_probs, axis=1)
+true_labels = np.argmax(test_batch_y, axis=1)
+
+plt.figure(figsize=(16, 9))
+for i in range(16):
+    plt.subplot(4, 4, i + 1)
+    plt.imshow(test_batch_X[i])
+    t = DISPLAY_NAMES[true_labels[i]]
+    p = DISPLAY_NAMES[pred_labels[i]]
+    c = pred_probs[i][pred_labels[i]] * 100
+    plt.title(f"T: {t}\nP: {p} ({c:.0f}%)",
+              fontsize=8, color='green' if t == p else 'red')
+    plt.axis('off')
+
+plt.suptitle('Predictions (Green=Correct | Red=Wrong)', fontsize=13)
+plt.tight_layout()
+plt.show()
+
+# ============================================================
+# CELL 18: Predict Single Image
+# ============================================================
+
+from tensorflow.keras.preprocessing import image as keras_image
+
+def predict_single_vehicle(img_path):
+    img    = keras_image.load_img(img_path, target_size=(IMG_HEIGHT, IMG_WIDTH))
+    arr    = keras_image.img_to_array(img) / 255.0
+    inp    = np.expand_dims(arr, axis=0)
+    probs  = model.predict(inp, verbose=0)[0]
+    pred   = np.argmax(probs)
+    colors = ['#4CAF50' if i == pred else '#90CAF9' for i in range(NUM_CLASSES)]
+
+    plt.figure(figsize=(12, 5))
+    plt.subplot(1, 2, 1)
+    plt.imshow(img)
+    plt.title('Input Image', fontsize=13)
+    plt.axis('off')
+
+    plt.subplot(1, 2, 2)
+    bars = plt.barh(DISPLAY_NAMES, probs * 100, color=colors)
+    plt.xlabel('Confidence (%)', fontsize=12)
+    plt.title(f"Predicted: {DISPLAY_NAMES[pred]} ({probs[pred]*100:.1f}%)", fontsize=13)
+    plt.xlim(0, 100)
+    plt.grid(axis='x', alpha=0.3)
+    for bar, p in zip(bars, probs):
+        plt.text(bar.get_width() + 1, bar.get_y() + bar.get_height()/2,
+                 f'{p*100:.1f}%', va='center', fontsize=10)
+    plt.tight_layout()
+    plt.show()
+
+    print("\nConfidence Scores:")
+    for name, p in zip(DISPLAY_NAMES, probs):
+        print(f"  {name:12s} {'█' * int(p*40)} {p*100:.2f}%")
+
+# Example usage:
+# predict_single_vehicle('/content/vehicle_dataset/vehicle_dataset/test/car/Car (1).jpeg')
+
+# ============================================================
+# CELL 19: Save Model
+# ============================================================
+
+save_path = '/content/drive/MyDrive/vehicle_detection_final_fixed.h5'
+model.save(save_path)
+print(f"Model saved: {save_path}")
+
+# ============================================================
+# CELL 20: Final Summary
+# ============================================================
+
+print("\n" + "="*60)
+print("    VEHICLE DETECTION CNN – FINAL CORRECTED RESULTS")
+print("="*60)
+print(f"  Image Size       : {IMG_HEIGHT} x {IMG_WIDTH}")
+print(f"  Batch Size       : {BATCH_SIZE}")
+print(f"  Epochs Trained   : {len(history.history['accuracy'])} / {EPOCHS}")
+print(f"  Best Val Accuracy: {best_val_acc * 100:.2f}%")
+print(f"  Test Accuracy    : {test_accuracy * 100:.2f}%")
+print(f"  Test Loss        : {test_loss:.4f}")
+print(f"  Train/Val Gap    : {gap * 100:.2f}%")
+print("─"*60)
+print("  OVERFITTING FIXES APPLIED:")
+print("  ✅ Batch size        : 32     → 64")
+print("  ✅ Dropout blocks 1&2: 0.25   → 0.20")
+print("  ✅ Dropout head      : 0.50   → 0.40")
+print("  ✅ Learning rate     : 0.0005 → 0.0008")
+print("  ✅ Augmentation      : reduced all ranges")
+print("  ✅ EarlyStopping     : patience 8 → 7")
+print("  ✅ ReduceLROnPlateau : patience 4 → 3")
+print("  ✅ Diagnostic report : added after training")
+print("="*60)
+
+--- Output ---
+Drive already mounted at /content/drive; to attempt to forcibly remount, call drive.mount("/content/drive", force_remount=True).
+Dataset folder already exists – skipping extraction.
+Train folders: ['truck', 'car', 'bus', 'motorcycle']
+Test folders : ['truck', 'car', 'bus', 'motorcycle']
+  ✅ car          → already has 200 test images
+  ✅ bus          → already has 200 test images
+  ✅ truck        → already has 200 test images
+  ✅ motorcycle   → already has 200 test images
+
+Final Dataset Structure:
+=============================================
+
+  TRAIN/
+    ✅ car         : 1000 images
+    ✅ bus         : 1000 images
+    ✅ truck       : 1000 images
+    ✅ motorcycle  : 1000 images
+
+  TEST/
+    ✅ car         : 200 images
+    ✅ bus         : 200 images
+    ✅ truck       : 200 images
+    ✅ motorcycle  : 200 images
+=============================================
+All libraries imported successfully!
+  Image size  : 128 x 128
+  Max epochs  : 30
+  Batch size  : 64  ✅ (changed from 32)
+  Classes     : ['car', 'bus', 'truck', 'motorcycle']
+Found 3200 images belonging to 4 classes.
+Found 800 images belonging to 4 classes.
+Found 800 images belonging to 4 classes.
+
+Training   batches : 50
+Validation batches : 13
+Test       batches : 13
+
+<Figure size 1400x700 with 16 Axes>
+<Figure size 1000x500 with 1 Axes>
+
+Image counts:
+  Car          – Train: 1000  |  Test:  200
+  Bus          – Train: 1000  |  Test:  200
+  Truck        – Train: 1000  |  Test:  200
+  Motorcycle   – Train: 1000  |  Test:  200
+
+/usr/local/lib/python3.12/dist-packages/keras/src/layers/convolutional/base_conv.py:113: UserWarning: Do not pass an `input_shape`/`input_dim` argument to a layer. When using Sequential models, prefer using an `Input(shape)` object as the first layer in the model instead.
+  super().__init__(activity_regularizer=activity_regularizer, **kwargs)
+
+[1mModel: "sequential_6"[0m
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┓
+┃[1m [0m[1mLayer (type)                   [0m[1m [0m┃[1m [0m[1mOutput Shape          [0m[1m [0m┃[1m [0m[1m      Param #[0m[1m [0m┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━┩
+│ conv2d_54 ([38;5;33mConv2D[0m)              │ ([38;5;45mNone[0m, [38;5;34m128[0m, [38;5;34m128[0m, [38;5;34m32[0m)   │           [38;5;34m896[0m │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ batch_normalization_58          │ ([38;5;45mNone[0m, [38;5;34m128[0m, [38;5;34m128[0m, [38;5;34m32[0m)   │           [38;5;34m128[0m │
+│ ([38;5;33mBatchNormalization[0m)            │                        │               │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ conv2d_55 ([38;5;33mConv2D[0m)              │ ([38;5;45mNone[0m, [38;5;34m128[0m, [38;5;34m128[0m, [38;5;34m32[0m)   │         [38;5;34m9,248[0m │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ batch_normalization_59          │ ([38;5;45mNone[0m, [38;5;34m128[0m, [38;5;34m128[0m, [38;5;34m32[0m)   │           [38;5;34m128[0m │
+│ ([38;5;33mBatchNormalization[0m)            │                        │               │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ max_pooling2d_28 ([38;5;33mMaxPooling2D[0m) │ ([38;5;45mNone[0m, [38;5;34m64[0m, [38;5;34m64[0m, [38;5;34m32[0m)     │             [38;5;34m0[0m │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ dropout_41 ([38;5;33mDropout[0m)            │ ([38;5;45mNone[0m, [38;5;34m64[0m, [38;5;34m64[0m, [38;5;34m32[0m)     │             [38;5;34m0[0m │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ conv2d_56 ([38;5;33mConv2D[0m)              │ ([38;5;45mNone[0m, [38;5;34m64[0m, [38;5;34m64[0m, [38;5;34m64[0m)     │        [38;5;34m18,496[0m │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ batch_normalization_60          │ ([38;5;45mNone[0m, [38;5;34m64[0m, [38;5;34m64[0m, [38;5;34m64[0m)     │           [38;5;34m256[0m │
+│ ([38;5;33mBatchNormalization[0m)            │                        │               │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ conv2d_57 ([38;5;33mConv2D[0m)              │ ([38;5;45mNone[0m, [38;5;34m64[0m, [38;5;34m64[0m, [38;5;34m64[0m)     │        [38;5;34m36,928[0m │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ batch_normalization_61          │ ([38;5;45mNone[0m, [38;5;34m64[0m, [38;5;34m64[0m, [38;5;34m64[0m)     │           [38;5;34m256[0m │
+│ ([38;5;33mBatchNormalization[0m)            │                        │               │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ max_pooling2d_29 ([38;5;33mMaxPooling2D[0m) │ ([38;5;45mNone[0m, [38;5;34m32[0m, [38;5;34m32[0m, [38;5;34m64[0m)     │             [38;5;34m0[0m │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ dropout_42 ([38;5;33mDropout[0m)            │ ([38;5;45mNone[0m, [38;5;34m32[0m, [38;5;34m32[0m, [38;5;34m64[0m)     │             [38;5;34m0[0m │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ conv2d_58 ([38;5;33mConv2D[0m)              │ ([38;5;45mNone[0m, [38;5;34m32[0m, [38;5;34m32[0m, [38;5;34m128[0m)    │        [38;5;34m73,856[0m │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ batch_normalization_62          │ ([38;5;45mNone[0m, [38;5;34m32[0m, [38;5;34m32[0m, [38;5;34m128[0m)    │           [38;5;34m512[0m │
+│ ([38;5;33mBatchNormalization[0m)            │                        │               │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ conv2d_59 ([38;5;33mConv2D[0m)              │ ([38;5;45mNone[0m, [38;5;34m32[0m, [38;5;34m32[0m, [38;5;34m128[0m)    │       [38;5;34m147,584[0m │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ batch_normalization_63          │ ([38;5;45mNone[0m, [38;5;34m32[0m, [38;5;34m32[0m, [38;5;34m128[0m)    │           [38;5;34m512[0m │
+│ ([38;5;33mBatchNormalization[0m)            │                        │               │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ max_pooling2d_30 ([38;5;33mMaxPooling2D[0m) │ ([38;5;45mNone[0m, [38;5;34m16[0m, [38;5;34m16[0m, [38;5;34m128[0m)    │             [38;5;34m0[0m │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ dropout_43 ([38;5;33mDropout[0m)            │ ([38;5;45mNone[0m, [38;5;34m16[0m, [38;5;34m16[0m, [38;5;34m128[0m)    │             [38;5;34m0[0m │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ conv2d_60 ([38;5;33mConv2D[0m)              │ ([38;5;45mNone[0m, [38;5;34m16[0m, [38;5;34m16[0m, [38;5;34m256[0m)    │       [38;5;34m295,168[0m │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ batch_normalization_64          │ ([38;5;45mNone[0m, [38;5;34m16[0m, [38;5;34m16[0m, [38;5;34m256[0m)    │         [38;5;34m1,024[0m │
+│ ([38;5;33mBatchNormalization[0m)            │                        │               │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ conv2d_61 ([38;5;33mConv2D[0m)              │ ([38;5;45mNone[0m, [38;5;34m16[0m, [38;5;34m16[0m, [38;5;34m256[0m)    │       [38;5;34m590,080[0m │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ batch_normalization_65          │ ([38;5;45mNone[0m, [38;5;34m16[0m, [38;5;34m16[0m, [38;5;34m256[0m)    │         [38;5;34m1,024[0m │
+│ ([38;5;33mBatchNormalization[0m)            │                        │               │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ max_pooling2d_31 ([38;5;33mMaxPooling2D[0m) │ ([38;5;45mNone[0m, [38;5;34m8[0m, [38;5;34m8[0m, [38;5;34m256[0m)      │             [38;5;34m0[0m │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ dropout_44 ([38;5;33mDropout[0m)            │ ([38;5;45mNone[0m, [38;5;34m8[0m, [38;5;34m8[0m, [38;5;34m256[0m)      │             [38;5;34m0[0m │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ flatten_1 ([38;5;33mFlatten[0m)             │ ([38;5;45mNone[0m, [38;5;34m16384[0m)          │             [38;5;34m0[0m │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ dense_20 ([38;5;33mDense[0m)                │ ([38;5;45mNone[0m, [38;5;34m512[0m)            │     [38;5;34m8,389,120[0m │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ batch_normalization_66          │ ([38;5;45mNone[0m, [38;5;34m512[0m)            │         [38;5;34m2,048[0m │
+│ ([38;5;33mBatchNormalization[0m)            │                        │               │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ dropout_45 ([38;5;33mDropout[0m)            │ ([38;5;45mNone[0m, [38;5;34m512[0m)            │             [38;5;34m0[0m │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ dense_21 ([38;5;33mDense[0m)                │ ([38;5;45mNone[0m, [38;5;34m256[0m)            │       [38;5;34m131,328[0m │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ batch_normalization_67          │ ([38;5;45mNone[0m, [38;5;34m256[0m)            │         [38;5;34m1,024[0m │
+│ ([38;5;33mBatchNormalization[0m)            │                        │               │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ dropout_46 ([38;5;33mDropout[0m)            │ ([38;5;45mNone[0m, [38;5;34m256[0m)            │             [38;5;34m0[0m │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ dense_22 ([38;5;33mDense[0m)                │ ([38;5;45mNone[0m, [38;5;34m128[0m)            │        [38;5;34m32,896[0m │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ dropout_47 ([38;5;33mDropout[0m)            │ ([38;5;45mNone[0m, [38;5;34m128[0m)            │             [38;5;34m0[0m │
+├─────────────────────────────────┼────────────────────────┼───────────────┤
+│ dense_23 ([38;5;33mDense[0m)                │ ([38;5;45mNone[0m, [38;5;34m4[0m)              │           [38;5;34m516[0m │
+└─────────────────────────────────┴────────────────────────┴───────────────┘
+
+[1m Total params: [0m[38;5;34m9,733,028[0m (37.13 MB)
+
+[1m Trainable params: [0m[38;5;34m9,729,572[0m (37.12 MB)
+
+[1m Non-trainable params: [0m[38;5;34m3,456[0m (13.50 KB)
+
+Model compiled!
+  Optimizer    : Adam (lr=0.0008)  ✅ increased from 0.0005
+  Loss         : categorical_crossentropy
+  Metrics      : accuracy
+Callbacks ready!
+  ✔ EarlyStopping     patience=7
+  ✔ ReduceLROnPlateau patience=3, factor=0.5
+  ✔ ModelCheckpoint   → saved to Google Drive
+
+==================================================
+  STARTING TRAINING
+  Image size : 128x128
+  Max epochs : 30
+  Batch size : 64
+==================================================
+
+
+/usr/local/lib/python3.12/dist-packages/keras/src/trainers/data_adapters/py_dataset_adapter.py:121: UserWarning: Your `PyDataset` class should call `super().__init__(**kwargs)` in its constructor. `**kwargs` can include `workers`, `use_multiprocessing`, `max_queue_size`. Do not pass these arguments to `fit()`, as they will be ignored.
+  self._warn_if_super_not_called()
+
+Epoch 1/30
+[1m24/50[0m [32m━━━━━━━━━[0m[37m━━━━━━━━━━━[0m [1m16s[0m 628ms/step - accuracy: 0.3444 - loss: 1.6759
+/usr/local/lib/python3.12/dist-packages/PIL/Image.py:1047: UserWarning: Palette images with Transparency expressed in bytes should be converted to RGBA images
+  warnings.warn(
+
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 629ms/step - accuracy: 0.3892 - loss: 1.5584
+Epoch 1: val_accuracy improved from -inf to 0.25000, saving model to /content/drive/MyDrive/best_vehicle_model_fixed.h5
+
+WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. 
+
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m62s[0m 908ms/step - accuracy: 0.3905 - loss: 1.5549 - val_accuracy: 0.2500 - val_loss: 1.8142 - learning_rate: 8.1000e-04
+Epoch 2/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 689ms/step - accuracy: 0.5803 - loss: 1.0523
+Epoch 2: val_accuracy did not improve from 0.25000
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m42s[0m 837ms/step - accuracy: 0.5807 - loss: 1.0513 - val_accuracy: 0.2412 - val_loss: 2.1227 - learning_rate: 8.1000e-04
+Epoch 3/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 634ms/step - accuracy: 0.6734 - loss: 0.8728
+Epoch 3: val_accuracy did not improve from 0.25000
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m41s[0m 816ms/step - accuracy: 0.6738 - loss: 0.8718 - val_accuracy: 0.2500 - val_loss: 2.2451 - learning_rate: 8.1000e-04
+Epoch 4/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 615ms/step - accuracy: 0.7468 - loss: 0.6747
+Epoch 4: val_accuracy did not improve from 0.25000
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m40s[0m 794ms/step - accuracy: 0.7469 - loss: 0.6748 - val_accuracy: 0.2500 - val_loss: 1.7541 - learning_rate: 8.1000e-04
+Epoch 5/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 621ms/step - accuracy: 0.7632 - loss: 0.6123
+Epoch 5: val_accuracy did not improve from 0.25000
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m40s[0m 801ms/step - accuracy: 0.7634 - loss: 0.6122 - val_accuracy: 0.2500 - val_loss: 3.5632 - learning_rate: 8.1000e-04
+Epoch 6/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 609ms/step - accuracy: 0.7986 - loss: 0.5261
+Epoch 6: val_accuracy did not improve from 0.25000
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m38s[0m 756ms/step - accuracy: 0.7986 - loss: 0.5263 - val_accuracy: 0.2488 - val_loss: 2.0075 - learning_rate: 8.1000e-04
+Epoch 7/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 621ms/step - accuracy: 0.7981 - loss: 0.5342
+Epoch 7: ReduceLROnPlateau reducing learning rate to 0.00040499999886378646.
+
+Epoch 7: val_accuracy improved from 0.25000 to 0.25375, saving model to /content/drive/MyDrive/best_vehicle_model_fixed.h5
+
+WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. 
+
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m42s[0m 846ms/step - accuracy: 0.7982 - loss: 0.5337 - val_accuracy: 0.2537 - val_loss: 1.8278 - learning_rate: 8.1000e-04
+Epoch 8/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 708ms/step - accuracy: 0.8384 - loss: 0.4311
+Epoch 8: val_accuracy improved from 0.25375 to 0.27500, saving model to /content/drive/MyDrive/best_vehicle_model_fixed.h5
+
+WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. 
+
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m47s[0m 936ms/step - accuracy: 0.8383 - loss: 0.4313 - val_accuracy: 0.2750 - val_loss: 1.5806 - learning_rate: 4.0500e-04
+Epoch 9/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 682ms/step - accuracy: 0.8302 - loss: 0.4313
+Epoch 9: val_accuracy improved from 0.27500 to 0.33625, saving model to /content/drive/MyDrive/best_vehicle_model_fixed.h5
+
+WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. 
+
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m45s[0m 890ms/step - accuracy: 0.8303 - loss: 0.4309 - val_accuracy: 0.3363 - val_loss: 1.3348 - learning_rate: 4.0500e-04
+Epoch 10/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 663ms/step - accuracy: 0.8618 - loss: 0.3651
+Epoch 10: val_accuracy improved from 0.33625 to 0.48500, saving model to /content/drive/MyDrive/best_vehicle_model_fixed.h5
+
+WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. 
+
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m44s[0m 878ms/step - accuracy: 0.8618 - loss: 0.3652 - val_accuracy: 0.4850 - val_loss: 1.1533 - learning_rate: 4.0500e-04
+Epoch 11/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 657ms/step - accuracy: 0.8455 - loss: 0.3953
+Epoch 11: val_accuracy improved from 0.48500 to 0.64875, saving model to /content/drive/MyDrive/best_vehicle_model_fixed.h5
+
+WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. 
+
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m45s[0m 899ms/step - accuracy: 0.8456 - loss: 0.3950 - val_accuracy: 0.6488 - val_loss: 0.8481 - learning_rate: 4.0500e-04
+Epoch 12/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 658ms/step - accuracy: 0.8607 - loss: 0.3596
+Epoch 12: val_accuracy improved from 0.64875 to 0.65250, saving model to /content/drive/MyDrive/best_vehicle_model_fixed.h5
+
+WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. 
+
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m44s[0m 891ms/step - accuracy: 0.8607 - loss: 0.3596 - val_accuracy: 0.6525 - val_loss: 0.7924 - learning_rate: 4.0500e-04
+Epoch 13/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 653ms/step - accuracy: 0.8701 - loss: 0.3533
+Epoch 13: val_accuracy improved from 0.65250 to 0.69750, saving model to /content/drive/MyDrive/best_vehicle_model_fixed.h5
+
+WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. 
+
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m44s[0m 884ms/step - accuracy: 0.8701 - loss: 0.3528 - val_accuracy: 0.6975 - val_loss: 0.7189 - learning_rate: 4.0500e-04
+Epoch 14/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 655ms/step - accuracy: 0.8725 - loss: 0.3079
+Epoch 14: val_accuracy improved from 0.69750 to 0.70125, saving model to /content/drive/MyDrive/best_vehicle_model_fixed.h5
+
+WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. 
+
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m45s[0m 907ms/step - accuracy: 0.8724 - loss: 0.3082 - val_accuracy: 0.7013 - val_loss: 0.8604 - learning_rate: 4.0500e-04
+Epoch 15/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 663ms/step - accuracy: 0.8593 - loss: 0.3532
+Epoch 15: val_accuracy improved from 0.70125 to 0.81375, saving model to /content/drive/MyDrive/best_vehicle_model_fixed.h5
+
+WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. 
+
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m45s[0m 897ms/step - accuracy: 0.8594 - loss: 0.3530 - val_accuracy: 0.8138 - val_loss: 0.4998 - learning_rate: 4.0500e-04
+Epoch 16/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 683ms/step - accuracy: 0.8777 - loss: 0.3284
+Epoch 16: val_accuracy did not improve from 0.81375
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m41s[0m 832ms/step - accuracy: 0.8778 - loss: 0.3282 - val_accuracy: 0.7600 - val_loss: 0.6787 - learning_rate: 4.0500e-04
+Epoch 17/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 622ms/step - accuracy: 0.8750 - loss: 0.3127
+Epoch 17: val_accuracy did not improve from 0.81375
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m40s[0m 806ms/step - accuracy: 0.8750 - loss: 0.3129 - val_accuracy: 0.8025 - val_loss: 0.5227 - learning_rate: 4.0500e-04
+Epoch 18/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 626ms/step - accuracy: 0.8663 - loss: 0.3193
+Epoch 18: ReduceLROnPlateau reducing learning rate to 0.00020249999943189323.
+
+Epoch 18: val_accuracy did not improve from 0.81375
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m40s[0m 806ms/step - accuracy: 0.8664 - loss: 0.3192 - val_accuracy: 0.7412 - val_loss: 0.7128 - learning_rate: 4.0500e-04
+Epoch 19/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 631ms/step - accuracy: 0.8789 - loss: 0.2884
+Epoch 19: val_accuracy improved from 0.81375 to 0.85500, saving model to /content/drive/MyDrive/best_vehicle_model_fixed.h5
+
+WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. 
+
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m44s[0m 869ms/step - accuracy: 0.8790 - loss: 0.2884 - val_accuracy: 0.8550 - val_loss: 0.4160 - learning_rate: 2.0250e-04
+Epoch 20/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 677ms/step - accuracy: 0.8867 - loss: 0.2726
+Epoch 20: val_accuracy did not improve from 0.85500
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m43s[0m 857ms/step - accuracy: 0.8866 - loss: 0.2728 - val_accuracy: 0.8300 - val_loss: 0.4149 - learning_rate: 2.0250e-04
+Epoch 21/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 627ms/step - accuracy: 0.8989 - loss: 0.2595
+Epoch 21: val_accuracy did not improve from 0.85500
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m39s[0m 790ms/step - accuracy: 0.8988 - loss: 0.2595 - val_accuracy: 0.7850 - val_loss: 0.5726 - learning_rate: 2.0250e-04
+Epoch 22/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 635ms/step - accuracy: 0.8904 - loss: 0.2721
+Epoch 22: val_accuracy did not improve from 0.85500
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m40s[0m 787ms/step - accuracy: 0.8903 - loss: 0.2721 - val_accuracy: 0.7475 - val_loss: 0.6356 - learning_rate: 2.0250e-04
+Epoch 23/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 631ms/step - accuracy: 0.8800 - loss: 0.2802
+Epoch 23: ReduceLROnPlateau reducing learning rate to 0.00010124999971594661.
+
+Epoch 23: val_accuracy did not improve from 0.85500
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m40s[0m 807ms/step - accuracy: 0.8801 - loss: 0.2799 - val_accuracy: 0.7675 - val_loss: 0.6012 - learning_rate: 2.0250e-04
+Epoch 24/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 615ms/step - accuracy: 0.9084 - loss: 0.2230
+Epoch 24: val_accuracy improved from 0.85500 to 0.85875, saving model to /content/drive/MyDrive/best_vehicle_model_fixed.h5
+
+WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. 
+
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m42s[0m 852ms/step - accuracy: 0.9083 - loss: 0.2233 - val_accuracy: 0.8587 - val_loss: 0.3744 - learning_rate: 1.0125e-04
+Epoch 25/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 669ms/step - accuracy: 0.9018 - loss: 0.2387
+Epoch 25: val_accuracy did not improve from 0.85875
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m43s[0m 855ms/step - accuracy: 0.9018 - loss: 0.2387 - val_accuracy: 0.8125 - val_loss: 0.4853 - learning_rate: 1.0125e-04
+Epoch 26/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 629ms/step - accuracy: 0.9020 - loss: 0.2408
+Epoch 26: val_accuracy did not improve from 0.85875
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m40s[0m 812ms/step - accuracy: 0.9021 - loss: 0.2408 - val_accuracy: 0.8587 - val_loss: 0.3523 - learning_rate: 1.0125e-04
+Epoch 27/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 625ms/step - accuracy: 0.9170 - loss: 0.2187
+Epoch 27: val_accuracy did not improve from 0.85875
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m40s[0m 801ms/step - accuracy: 0.9168 - loss: 0.2190 - val_accuracy: 0.8438 - val_loss: 0.4082 - learning_rate: 1.0125e-04
+Epoch 28/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 622ms/step - accuracy: 0.9064 - loss: 0.2269
+Epoch 28: val_accuracy did not improve from 0.85875
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m39s[0m 773ms/step - accuracy: 0.9064 - loss: 0.2271 - val_accuracy: 0.8288 - val_loss: 0.4783 - learning_rate: 1.0125e-04
+Epoch 29/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 637ms/step - accuracy: 0.8994 - loss: 0.2561
+Epoch 29: ReduceLROnPlateau reducing learning rate to 5.062499985797331e-05.
+
+Epoch 29: val_accuracy did not improve from 0.85875
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m40s[0m 803ms/step - accuracy: 0.8995 - loss: 0.2557 - val_accuracy: 0.8575 - val_loss: 0.4210 - learning_rate: 1.0125e-04
+Epoch 30/30
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 625ms/step - accuracy: 0.9148 - loss: 0.2434
+Epoch 30: val_accuracy improved from 0.85875 to 0.86625, saving model to /content/drive/MyDrive/best_vehicle_model_fixed.h5
+
+WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. 
+
+[1m50/50[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m43s[0m 861ms/step - accuracy: 0.9149 - loss: 0.2428 - val_accuracy: 0.8662 - val_loss: 0.3552 - learning_rate: 5.0625e-05
+
+Training completed!
+
+<Figure size 1400x500 with 2 Axes>
+
+Best Validation Accuracy : 86.62%
+Total Epochs Trained     : 30
+
+=======================================================
+       OVERFITTING DIAGNOSTIC REPORT
+=======================================================
+  Training Accuracy   : 91.69%
+  Validation Accuracy : 86.62%
+  Gap (|Val - Train|) : 5.06%
+───────────────────────────────────────────────────────
+  ⚠️  MILD GAP  – Gap 5–10%    – acceptable result
+=======================================================
+
+Test Accuracy : 81.38%
+Test Loss     : 0.5084
+
+Classification Report:
+============================================================
+              precision    recall  f1-score   support
+
+         Car      1.000     0.715     0.834       200
+         Bus      0.638     0.980     0.773       200
+       Truck      0.801     0.705     0.750       200
+  Motorcycle      0.983     0.855     0.914       200
+
+    accuracy                          0.814       800
+   macro avg      0.856     0.814     0.818       800
+weighted avg      0.856     0.814     0.818       800
+
+
+<Figure size 800x600 with 2 Axes>
+
+Per-Class Accuracy:
+---------------------------------------------
+  Car         : 143/200  ██████████████ 71.5%
+  Bus         : 196/200  ███████████████████ 98.0%
+  Truck       : 141/200  ██████████████ 70.5%
+  Motorcycle  : 171/200  █████████████████ 85.5%
+Found 800 images belonging to 4 classes.
+
+<Figure size 1600x900 with 16 Axes>
+WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. 
+
+Model saved: /content/drive/MyDrive/vehicle_detection_final_fixed.h5
+
+============================================================
+    VEHICLE DETECTION CNN – FINAL CORRECTED RESULTS
+============================================================
+  Image Size       : 128 x 128
+  Batch Size       : 64
+  Epochs Trained   : 30 / 30
+  Best Val Accuracy: 86.62%
+  Test Accuracy    : 81.38%
+  Test Loss        : 0.5084
+  Train/Val Gap    : 5.06%
+────────────────────────────────────────────────────────────
+  OVERFITTING FIXES APPLIED:
+  ✅ Batch size        : 32     → 64
+  ✅ Dropout blocks 1&2: 0.25   → 0.20
+  ✅ Dropout head      : 0.50   → 0.40
+  ✅ Learning rate     : 0.0005 → 0.0008
+  ✅ Augmentation      : reduced all ranges
+  ✅ EarlyStopping     : patience 8 → 7
+  ✅ ReduceLROnPlateau : patience 4 → 3
+  ✅ Diagnostic report : added after training
+============================================================
+
+
+=== Cell 2 ===
+# Final evaluation
+test_loss, test_accuracy = model.evaluate(test_generator, verbose=0)
+print(f'Test Accuracy : {test_accuracy * 100:.2f}%')
+
+# Predictions
+y_prob = model.predict(test_generator, verbose=0)
+y_pred = np.argmax(y_prob, axis=1)
+y_true = test_generator.classes
+
+--- Output ---
+/usr/local/lib/python3.12/dist-packages/PIL/Image.py:1047: UserWarning: Palette images with Transparency expressed in bytes should be converted to RGBA images
+  warnings.warn(
+
+Test Accuracy : 81.38%
+
+
+=== Cell 3 ===
+# ============================================================
+# INITIAL MODEL EVALUATION – 5 Random Test Images
+# ============================================================
+
+from tensorflow.keras.preprocessing import image as keras_image
+import random
+
+# Load all test images into memory for random selection
+print("Loading test images for evaluation...")
+
+all_test_images = []
+all_test_labels = []
+
+for cls_idx, cls in enumerate(CLASS_NAMES):
+    cls_path = os.path.join(TEST_DIR, cls)
+    img_files = [f for f in os.listdir(cls_path)
+                 if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+    for img_file in img_files:
+        all_test_images.append(os.path.join(cls_path, img_file))
+        all_test_labels.append(cls_idx)
+
+print(f"Total test images loaded : {len(all_test_images)}")
+print(f"Classes                  : {DISPLAY_NAMES}")
+
+
+# ============================================================
+# Single Image Prediction Function
+# ============================================================
+
+def predict_single_image(image_path, true_label_idx):
+    """
+    Predict class for a single image and show details.
+    Parameters:
+        image_path    : full path to the image file
+        true_label_idx: integer class index (0=car, 1=bus, 2=truck, 3=motorcycle)
+    """
+    # ── Load & preprocess ─────────────────────────────────
+    image         = keras_image.load_img(image_path,
+                                         target_size=(IMG_HEIGHT, IMG_WIDTH))
+    image_array   = keras_image.img_to_array(image)
+    image_norm    = image_array / 255.0
+    image_input   = np.expand_dims(image_norm, axis=0)  # Add batch dimension
+
+    # ── Predict ───────────────────────────────────────────
+    probabilities   = model.predict(image_input, verbose=0)[0]
+    predicted_class = np.argmax(probabilities)
+    is_correct      = predicted_class == true_label_idx
+
+    # ── Display ───────────────────────────────────────────
+    plt.figure(figsize=(12, 5))
+
+    # Left: Show image
+    plt.subplot(1, 2, 1)
+    plt.imshow(image_array.astype('uint8'))
+    title_color = 'green' if is_correct else 'red'
+    status      = '✅ CORRECT' if is_correct else '❌ WRONG'
+    plt.title(f"True Label  : {DISPLAY_NAMES[true_label_idx]}\n"
+              f"Prediction  : {status}",
+              fontsize=12, color=title_color)
+    plt.axis('off')
+
+    # Right: Confidence bar chart
+    plt.subplot(1, 2, 2)
+    colors = ['#4CAF50' if i == predicted_class else
+              '#FF5722' if i == true_label_idx  else
+              '#90CAF9'
+              for i in range(NUM_CLASSES)]
+
+    bars = plt.barh(DISPLAY_NAMES, probabilities * 100, color=colors)
+    plt.xlabel('Confidence (%)', fontsize=12)
+    plt.title(f"Predicted : {DISPLAY_NAMES[predicted_class]} "
+              f"({probabilities[predicted_class]*100:.1f}%)",
+              fontsize=13)
+    plt.xlim(0, 100)
+    plt.grid(axis='x', alpha=0.3)
+
+    # Add percentage labels on bars
+    for bar, prob in zip(bars, probabilities):
+        plt.text(bar.get_width() + 1,
+                 bar.get_y() + bar.get_height() / 2,
+                 f'{prob*100:.1f}%', va='center', fontsize=10)
+
+    plt.tight_layout()
+    plt.show()
+
+    return predicted_class, probabilities, is_correct
+
+
+# ============================================================
+# Evaluate 5 Randomly Chosen Test Images
+# ============================================================
+
+print("\n" + "="*60)
+print("   INITIAL MODEL EVALUATION – 5 RANDOM TEST IMAGES")
+print("="*60)
+
+# Pick 5 random images
+random.seed(42)
+random_indices = random.sample(range(len(all_test_images)), 5)
+
+results = []   # Store results for summary
+
+for count, idx in enumerate(random_indices, 1):
+    img_path  = all_test_images[idx]
+    true_idx  = all_test_labels[idx]
+
+    print(f"\n── Image {count}/5 ──────────────────────────────────")
+    print(f"  File       : {os.path.basename(img_path)}")
+    print(f"  True Class : {DISPLAY_NAMES[true_idx]}")
+
+    pred_class, probs, correct = predict_single_image(img_path, true_idx)
+
+    # Top 3 predictions
+    print(f"\n  Top 3 Predictions:")
+    top_3 = np.argsort(probs)[-3:][::-1]
+    for rank, cls_idx in enumerate(top_3, 1):
+        marker = '👑' if rank == 1 else f'  {rank}.'
+        print(f"    {marker} {DISPLAY_NAMES[cls_idx]:12s}: {probs[cls_idx]*100:.2f}%")
+
+    results.append({
+        'image'     : os.path.basename(img_path),
+        'true'      : DISPLAY_NAMES[true_idx],
+        'predicted' : DISPLAY_NAMES[pred_class],
+        'confidence': probs[pred_class] * 100,
+        'correct'   : correct
+    })
+
+
+# ============================================================
+# Evaluation Summary Table
+# ============================================================
+
+print("\n" + "="*65)
+print("   EVALUATION SUMMARY – 5 RANDOM TEST IMAGES")
+print("="*65)
+print(f"  {'#':<4} {'True Class':<14} {'Predicted':<14} "
+      f"{'Confidence':<12} {'Result'}")
+print("  " + "-"*60)
+
+correct_count = 0
+for i, r in enumerate(results, 1):
+    status = '✅ Correct' if r['correct'] else '❌ Wrong'
+    if r['correct']:
+        correct_count += 1
+    print(f"  {i:<4} {r['true']:<14} {r['predicted']:<14} "
+          f"{r['confidence']:>6.1f}%      {status}")
+
+print("  " + "-"*60)
+print(f"  Overall : {correct_count}/5 correct "
+      f"({correct_count/5*100:.0f}% on sample)")
+print("="*65)
+
+# Bar chart legend explanation
+print("\n  Bar Chart Color Guide:")
+print("  🟢 Green  = Predicted class (model's choice)")
+print("  🔴 Red    = True class (when prediction is wrong)")
+print("  🔵 Blue   = Other classes")
+
+--- Output ---
+Loading test images for evaluation...
+Total test images loaded : 800
+Classes                  : ['Car', 'Bus', 'Truck', 'Motorcycle']
+
+============================================================
+   INITIAL MODEL EVALUATION – 5 RANDOM TEST IMAGES
+============================================================
+
+── Image 1/5 ──────────────────────────────────
+  File       : Bike (460).jpeg
+  True Class : Motorcycle
+
+/tmp/ipython-input-426/309290271.py:83: UserWarning: Glyph 9989 (\N{WHITE HEAVY CHECK MARK}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/usr/local/lib/python3.12/dist-packages/IPython/core/pylabtools.py:151: UserWarning: Glyph 9989 (\N{WHITE HEAVY CHECK MARK}) missing from font(s) DejaVu Sans.
+  fig.canvas.print_figure(bytes_io, **kw)
+
+<Figure size 1200x500 with 2 Axes>
+
+  Top 3 Predictions:
+    👑 Motorcycle  : 99.85%
+      2. Truck       : 0.10%
+      3. Bus         : 0.04%
+
+── Image 2/5 ──────────────────────────────────
+  File       : Car (1398).jpeg
+  True Class : Car
+
+<Figure size 1200x500 with 2 Axes>
+
+  Top 3 Predictions:
+    👑 Car         : 97.16%
+      2. Motorcycle  : 1.75%
+      3. Truck       : 0.86%
+
+── Image 3/5 ──────────────────────────────────
+  File       : Car (1599).jpeg
+  True Class : Car
+
+/tmp/ipython-input-426/309290271.py:83: UserWarning: Glyph 10060 (\N{CROSS MARK}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/usr/local/lib/python3.12/dist-packages/IPython/core/pylabtools.py:151: UserWarning: Glyph 10060 (\N{CROSS MARK}) missing from font(s) DejaVu Sans.
+  fig.canvas.print_figure(bytes_io, **kw)
+
+<Figure size 1200x500 with 2 Axes>
+
+  Top 3 Predictions:
+    👑 Truck       : 62.78%
+      2. Bus         : 30.05%
+      3. Car         : 6.95%
+
+── Image 4/5 ──────────────────────────────────
+  File       : Bike (580).jpeg
+  True Class : Motorcycle
+
+<Figure size 1200x500 with 2 Axes>
+
+  Top 3 Predictions:
+    👑 Motorcycle  : 95.06%
+      2. Bus         : 4.57%
+      3. Truck       : 0.36%
+
+── Image 5/5 ──────────────────────────────────
+  File       : 2_460.jpg
+  True Class : Bus
+
+<Figure size 1200x500 with 2 Axes>
+
+  Top 3 Predictions:
+    👑 Bus         : 99.25%
+      2. Truck       : 0.75%
+      3. Motorcycle  : 0.00%
+
+=================================================================
+   EVALUATION SUMMARY – 5 RANDOM TEST IMAGES
+=================================================================
+  #    True Class     Predicted      Confidence   Result
+  ------------------------------------------------------------
+  1    Motorcycle     Motorcycle       99.8%      ✅ Correct
+  2    Car            Car              97.2%      ✅ Correct
+  3    Car            Truck            62.8%      ❌ Wrong
+  4    Motorcycle     Motorcycle       95.1%      ✅ Correct
+  5    Bus            Bus              99.2%      ✅ Correct
+  ------------------------------------------------------------
+  Overall : 4/5 correct (80% on sample)
+=================================================================
+
+  Bar Chart Color Guide:
+  🟢 Green  = Predicted class (model's choice)
+  🔴 Red    = True class (when prediction is wrong)
+  🔵 Blue   = Other classes
+
+
