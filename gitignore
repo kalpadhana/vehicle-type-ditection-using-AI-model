@@ -1,0 +1,43 @@
+# Model weights
+*.h5
+*.keras
+*.pb
+*.ckpt
+
+# Dataset files (too large for GitHub)
+*.zip
+vehicle_dataset/
+dataset/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Google Drive / Colab
+drive/
+content/
+
+# Logs
+*.log
