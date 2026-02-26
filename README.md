@@ -164,3 +164,8 @@ Open the notebook in **Google Colab** for best results (GPU recommended):
 ## 📄 License
 
 This project is for academic purposes – **ICT 3212**, Rajarata University of Sri Lanka.
+## 📄model
+
+full model dawnload here
+go to the link-
+https://drive.google.com/file/d/1g8irGjA80TeudjSmVOoPv_9JsfkZx3M_/view?usp=sharing
